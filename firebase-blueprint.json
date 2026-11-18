@@ -1,0 +1,133 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated WHERE user profile and active workspace mode.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of the user." },
+        "displayName": { "type": "string", "description": "User display name." },
+        "preferredMode": { "type": "string", "enum": ["COMMUTER", "DRIVER"], "description": "Active role mode." },
+        "homeCity": { "type": "string", "description": "User metro city for transit context." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp (FieldValue.serverTimestamp())." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp (FieldValue.serverTimestamp())." }
+      },
+      "required": ["userId", "displayName", "preferredMode", "homeCity", "createdAt", "updatedAt"]
+    },
+    "SavedRoute": {
+      "title": "SavedRoute",
+      "description": "User-saved multimodal transit route with fair-fare estimate.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "originName": { "type": "string", "description": "Starting landmark or address." },
+        "destinationName": { "type": "string", "description": "Target terminal or destination." },
+        "distanceKm": { "type": "number", "description": "Route distance in kilometers." },
+        "estimatedMinutes": { "type": "integer", "description": "Estimated total trip duration in minutes." },
+        "fareSummary": { "type": "string", "description": "Estimated fair fare range summary (e.g. NGN 200-350 or Free Trek)." },
+        "trekRecommended": { "type": "boolean", "description": "True when route is under 1.5 km and walking is suggested." },
+        "stepsSummary": { "type": "string", "description": "Formatted step-by-step multimodal transit legs." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp (FieldValue.serverTimestamp())." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp (FieldValue.serverTimestamp())." }
+      },
+      "required": [
+        "userId",
+        "originName",
+        "destinationName",
+        "distanceKm",
+        "estimatedMinutes",
+        "fareSummary",
+        "trekRecommended",
+        "stepsSummary",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ActiveRide": {
+      "title": "ActiveRide",
+      "description": "Live driver route corridor and real-time seat capacity broadcast.",
+      "type": "object",
+      "properties": {
+        "driverId": { "type": "string", "description": "Driver Firebase Auth UID." },
+        "driverName": { "type": "string", "description": "Driver public first name or handle." },
+        "vehicleType": { "type": "string", "enum": ["KEKE", "SHUTTLE", "BUS", "SEDAN"], "description": "Transit vehicle type." },
+        "corridorLabel": { "type": "string", "description": "Corridor route summary (e.g. Yaba -> Ikeja)." },
+        "originName": { "type": "string", "description": "Driver starting point." },
+        "destinationName": { "type": "string", "description": "Driver destination terminal." },
+        "fareEstimateNaira": { "type": "integer", "description": "Standard fare per seat in Naira." },
+        "currentPassengers": { "type": "integer", "description": "Current occupied passenger seats." },
+        "maxCapacity": { "type": "integer", "description": "Maximum passenger capacity." },
+        "status": { "type": "string", "enum": ["AVAILABLE", "FULL", "ENDED"], "description": "Live seat matching status." },
+        "broadcasting": { "type": "boolean", "description": "True while driver is actively broadcasting." },
+        "latitude": { "type": "number", "description": "Driver latitude coordinate." },
+        "longitude": { "type": "number", "description": "Driver longitude coordinate." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp (FieldValue.serverTimestamp())." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp (FieldValue.serverTimestamp())." }
+      },
+      "required": [
+        "driverId",
+        "driverName",
+        "vehicleType",
+        "corridorLabel",
+        "originName",
+        "destinationName",
+        "fareEstimateNaira",
+        "currentPassengers",
+        "maxCapacity",
+        "status",
+        "broadcasting",
+        "latitude",
+        "longitude",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RideRequest": {
+      "title": "RideRequest",
+      "description": "Commuter seat coordination request linked to an active driver broadcast.",
+      "type": "object",
+      "properties": {
+        "commuterId": { "type": "string", "description": "Requesting commuter UID." },
+        "commuterName": { "type": "string", "description": "Requesting commuter display name." },
+        "driverId": { "type": "string", "description": "Target driver UID." },
+        "driverName": { "type": "string", "description": "Target driver display name." },
+        "corridorLabel": { "type": "string", "description": "Corridor label of the ride." },
+        "pickupNote": { "type": "string", "description": "Short junction or landmark note." },
+        "fareEstimateNaira": { "type": "integer", "description": "Quoted standard fare in Naira." },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "DECLINED", "CANCELLED"], "description": "Coordination state." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp (FieldValue.serverTimestamp())." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp (FieldValue.serverTimestamp())." }
+      },
+      "required": [
+        "commuterId",
+        "commuterName",
+        "driverId",
+        "driverName",
+        "corridorLabel",
+        "pickupNote",
+        "fareEstimateNaira",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Per-user profile and preferred role mode."
+    },
+    "/users/{userId}/saved_routes/{routeId}": {
+      "schema": { "$ref": "#/entities/SavedRoute" },
+      "description": "User-saved multimodal transit routes and fare estimates."
+    },
+    "/active_rides/{driverId}": {
+      "schema": { "$ref": "#/entities/ActiveRide" },
+      "description": "Live driver route corridors and real-time seat counters."
+    },
+    "/ride_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/RideRequest" },
+      "description": "Commuter seat match requests for active driver broadcasts."
+    }
+  }
+}

@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">WHERE</string>
+    <string name="tagline">Abuja commuter transit guide: clear steps, fair fares, and AI route memory.</string>
+    <string name="abuja_beta_badge">Abuja beta</string>
+    <string name="nav_route">Route</string>
+    <string name="nav_guide">AI Guide</string>
+    <string name="nav_memory">AI Memory</string>
+    <string name="outside_abuja_message">WHERE currently covers Abuja only.</string>
+    <string name="osm_attribution">© OpenStreetMap contributors</string>
+</resources>

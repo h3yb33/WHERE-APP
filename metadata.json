@@ -1,0 +1,6 @@
+{
+  "name": "WHERE",
+  "description": "Abuja commuter transit navigation with step-by-step multimodal routes, fair fares, post-trip surveys, and a self-training AI transit guide.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

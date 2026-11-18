@@ -1,0 +1,227 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+             data.preferredMode in ['COMMUTER', 'DRIVER'] &&
+             data.homeCity is string && data.homeCity.size() <= 60;
+    }
+
+    function isValidSavedRoute(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.originName is string && data.originName.size() >= 1 && data.originName.size() <= 120 &&
+             data.destinationName is string && data.destinationName.size() >= 1 && data.destinationName.size() <= 120 &&
+             (data.distanceKm is float || data.distanceKm is int) && data.distanceKm >= 0 && data.distanceKm <= 500 &&
+             data.estimatedMinutes is int && data.estimatedMinutes >= 1 && data.estimatedMinutes <= 1440 &&
+             data.fareSummary is string && data.fareSummary.size() >= 1 && data.fareSummary.size() <= 60 &&
+             data.trekRecommended is bool &&
+             data.stepsSummary is string && data.stepsSummary.size() >= 1 && data.stepsSummary.size() <= 1200;
+    }
+
+    function isValidActiveRide(data) {
+      return data.driverId is string && data.driverId.size() >= 1 && data.driverId.size() <= 128 &&
+             data.driverName is string && data.driverName.size() >= 1 && data.driverName.size() <= 60 &&
+             data.vehicleType in ['KEKE', 'SHUTTLE', 'BUS', 'SEDAN'] &&
+             data.corridorLabel is string && data.corridorLabel.size() >= 1 && data.corridorLabel.size() <= 120 &&
+             data.originName is string && data.originName.size() >= 1 && data.originName.size() <= 100 &&
+             data.destinationName is string && data.destinationName.size() >= 1 && data.destinationName.size() <= 100 &&
+             data.fareEstimateNaira is int && data.fareEstimateNaira >= 0 && data.fareEstimateNaira <= 50000 &&
+             data.currentPassengers is int && data.currentPassengers >= 0 && data.currentPassengers <= 50 &&
+             data.maxCapacity is int && data.maxCapacity >= 1 && data.maxCapacity <= 50 &&
+             data.currentPassengers <= data.maxCapacity &&
+             data.status in ['AVAILABLE', 'FULL', 'ENDED'] &&
+             data.broadcasting is bool &&
+             (data.latitude is float || data.latitude is int) && data.latitude >= -90 && data.latitude <= 90 &&
+             (data.longitude is float || data.longitude is int) && data.longitude >= -180 && data.longitude <= 180;
+    }
+
+    function isValidRideRequest(data) {
+      return data.commuterId is string && data.commuterId.size() >= 1 && data.commuterId.size() <= 128 &&
+             data.commuterName is string && data.commuterName.size() >= 1 && data.commuterName.size() <= 60 &&
+             data.driverId is string && isValidId(data.driverId) &&
+             data.driverName is string && data.driverName.size() >= 1 && data.driverName.size() <= 60 &&
+             data.corridorLabel is string && data.corridorLabel.size() >= 1 && data.corridorLabel.size() <= 120 &&
+             data.pickupNote is string && data.pickupNote.size() <= 160 &&
+             data.fareEstimateNaira is int && data.fareEstimateNaira >= 0 && data.fareEstimateNaira <= 50000 &&
+             data.status in ['PENDING', 'ACCEPTED', 'DECLINED', 'CANCELLED'];
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if isSignedIn() && request.auth.uid == userId;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'preferredMode', 'homeCity', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'preferredMode', 'homeCity', 'createdAt', 'updatedAt']) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidUserProfile(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidUserProfile(incoming()) &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'preferredMode', 'homeCity', 'updatedAt']);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+      match /saved_routes/{routeId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(routeId) && request.auth.uid == userId;
+        allow list: if isSignedIn() && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(routeId) &&
+                         request.auth.uid == userId &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'userId', 'originName', 'destinationName', 'distanceKm',
+                           'estimatedMinutes', 'fareSummary', 'trekRecommended',
+                           'stepsSummary', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'originName', 'destinationName', 'distanceKm',
+                           'estimatedMinutes', 'fareSummary', 'trekRecommended',
+                           'stepsSummary', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidSavedRoute(incoming());
+
+        allow update: if isSignedIn() &&
+                         isValidSavedRoute(incoming()) &&
+                         isValidId(userId) &&
+                         isValidId(routeId) &&
+                         request.auth.uid == userId &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'originName', 'destinationName', 'distanceKm',
+                           'estimatedMinutes', 'fareSummary', 'trekRecommended',
+                           'stepsSummary', 'updatedAt'
+                         ]);
+
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(routeId) && request.auth.uid == userId;
+      }
+    }
+
+    match /active_rides/{driverId} {
+      allow get: if isSignedIn() && isValidId(driverId);
+      allow list: if isSignedIn() &&
+                     resource.data.broadcasting == true &&
+                     resource.data.status in ['AVAILABLE', 'FULL'];
+
+      allow create: if isSignedIn() &&
+                       isValidId(driverId) &&
+                       request.auth.uid == driverId &&
+                       incoming().driverId == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'driverId', 'driverName', 'vehicleType', 'corridorLabel',
+                         'originName', 'destinationName', 'fareEstimateNaira',
+                         'currentPassengers', 'maxCapacity', 'status', 'broadcasting',
+                         'latitude', 'longitude', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'driverId', 'driverName', 'vehicleType', 'corridorLabel',
+                         'originName', 'destinationName', 'fareEstimateNaira',
+                         'currentPassengers', 'maxCapacity', 'status', 'broadcasting',
+                         'latitude', 'longitude', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       isValidActiveRide(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidActiveRide(incoming()) &&
+                       isValidId(driverId) &&
+                       request.auth.uid == driverId &&
+                       incoming().driverId == existing().driverId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'driverName', 'vehicleType', 'corridorLabel',
+                         'originName', 'destinationName', 'fareEstimateNaira',
+                         'currentPassengers', 'maxCapacity', 'status', 'broadcasting',
+                         'latitude', 'longitude', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(driverId) && request.auth.uid == driverId;
+    }
+
+    match /ride_requests/{requestId} {
+      allow get: if isSignedIn() &&
+                    isValidId(requestId) &&
+                    (resource.data.commuterId == request.auth.uid || resource.data.driverId == request.auth.uid);
+
+      allow list: if isSignedIn() &&
+                     (resource.data.commuterId == request.auth.uid || resource.data.driverId == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       isValidRideRequest(incoming()) &&
+                       incoming().commuterId == request.auth.uid &&
+                       incoming().status == 'PENDING' &&
+                       incoming().keys().hasAll([
+                         'commuterId', 'commuterName', 'driverId', 'driverName',
+                         'corridorLabel', 'pickupNote', 'fareEstimateNaira',
+                         'status', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'commuterId', 'commuterName', 'driverId', 'driverName',
+                         'corridorLabel', 'pickupNote', 'fareEstimateNaira',
+                         'status', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       exists(/databases/$(database)/documents/active_rides/$(incoming().driverId)) &&
+                       get(/databases/$(database)/documents/active_rides/$(incoming().driverId)).data.broadcasting == true &&
+                       get(/databases/$(database)/documents/active_rides/$(incoming().driverId)).data.status == 'AVAILABLE';
+
+      allow update: if isSignedIn() &&
+                       isValidRideRequest(incoming()) &&
+                       isValidId(requestId) &&
+                       existing().status == 'PENDING' &&
+                       incoming().commuterId == existing().commuterId &&
+                       incoming().driverId == existing().driverId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+                       (
+                         (request.auth.uid == existing().driverId && incoming().status in ['ACCEPTED', 'DECLINED']) ||
+                         (request.auth.uid == existing().commuterId && incoming().status == 'CANCELLED')
+                       );
+
+      allow delete: if isSignedIn() && isValidId(requestId) && resource.data.commuterId == request.auth.uid;
+    }
+  }
+}
