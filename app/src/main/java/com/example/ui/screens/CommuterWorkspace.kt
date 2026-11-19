@@ -99,6 +99,7 @@ import com.example.ui.components.ActiveTripTrackerCard
 import com.example.ui.components.LeafletAbujaMapView
 import com.example.ui.components.PostTripSurveyDialog
 import com.example.ui.components.RouteResultCard
+import com.example.ui.components.WaysToGetThereSection
 import com.example.ui.theme.OverchargeAmber
 import com.example.ui.theme.OverchargeSoftBg
 import com.example.ui.theme.WhereDeepGreen
@@ -154,6 +155,7 @@ fun CommuterWorkspace(
     onSelectSavedPlace: (SavedPlaceEntity) -> Unit,
     onRunSampleTrip: (SampleTripPreset) -> Unit,
     onFindRoute: () -> Unit,
+    onSelectRouteOption: (Int) -> Unit,
     onClearResult: () -> Unit,
     onSavePlace: (String, String, Double, Double) -> Unit,
     onSaveRoute: (RoutePlan) -> Unit,
@@ -312,6 +314,7 @@ fun CommuterWorkspace(
                         onSelectSavedPlace = onSelectSavedPlace,
                         onRunSampleTrip = onRunSampleTrip,
                         onFindRoute = onFindRoute,
+                        onSelectRouteOption = onSelectRouteOption,
                         onClearResult = onClearResult,
                         onSavePlace = onSavePlace,
                         onSaveRoute = onSaveRoute,
@@ -409,6 +412,7 @@ fun CommuterWorkspace(
                     onSelectSavedPlace = onSelectSavedPlace,
                     onRunSampleTrip = onRunSampleTrip,
                     onFindRoute = onFindRoute,
+                    onSelectRouteOption = onSelectRouteOption,
                     onClearResult = onClearResult,
                     onSavePlace = onSavePlace,
                     onSaveRoute = onSaveRoute,
@@ -569,6 +573,7 @@ private fun RouteSidebarContent(
     onSelectSavedPlace: (SavedPlaceEntity) -> Unit,
     onRunSampleTrip: (SampleTripPreset) -> Unit,
     onFindRoute: () -> Unit,
+    onSelectRouteOption: (Int) -> Unit,
     onClearResult: () -> Unit,
     onSavePlace: (String, String, Double, Double) -> Unit,
     onSaveRoute: (RoutePlan) -> Unit,
@@ -900,22 +905,29 @@ private fun RouteSidebarContent(
             is RoutePlanState.Success -> {
                 val isTripRunning = activeTripSession?.plan?.originName == routePlanState.plan.originName &&
                     activeTripSession.plan.destinationName == routePlanState.plan.destinationName
-                RouteResultCard(
-                    plan = routePlanState.plan,
-                    isTripActiveForPlan = isTripRunning,
-                    onStartTrip = { onStartTrip(routePlanState.plan) },
-                    onSavePlace = {
-                        onSavePlace(
-                            routePlanState.plan.destinationName,
-                            routePlanState.plan.destinationName,
-                            routePlanState.plan.destinationLat,
-                            routePlanState.plan.destinationLng
-                        )
-                    },
-                    onSaveRoute = { onSaveRoute(routePlanState.plan) },
-                    onEndActiveTrip = onRequestEndTrip,
-                    onClearResult = onClearResult
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    WaysToGetThereSection(
+                        bundle = routePlanState.bundle,
+                        selectedIndex = routePlanState.selectedIndex,
+                        onSelectOption = onSelectRouteOption
+                    )
+                    RouteResultCard(
+                        plan = routePlanState.plan,
+                        isTripActiveForPlan = isTripRunning,
+                        onStartTrip = { onStartTrip(routePlanState.plan) },
+                        onSavePlace = {
+                            onSavePlace(
+                                routePlanState.plan.destinationName,
+                                routePlanState.plan.destinationName,
+                                routePlanState.plan.destinationLat,
+                                routePlanState.plan.destinationLng
+                            )
+                        },
+                        onSaveRoute = { onSaveRoute(routePlanState.plan) },
+                        onEndActiveTrip = onRequestEndTrip,
+                        onClearResult = onClearResult
+                    )
+                }
             }
         }
     }

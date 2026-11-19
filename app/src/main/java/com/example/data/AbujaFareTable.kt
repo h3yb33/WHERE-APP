@@ -5,9 +5,10 @@ import kotlin.math.roundToInt
 enum class AbujaTransitMode(val label: String) {
     TREK("Trek"),
     BUS("Bus"),
-    TAXI("Taxi / Along"),
+    TAXI("Along"),
     KEKE("Keke"),
-    OKADA("Okada")
+    OKADA("Okada"),
+    DROP("Drop")
 }
 
 data class FareBand(
@@ -186,8 +187,10 @@ object AbujaFareTable {
             "BUS", "BRT" -> AbujaTransitMode.BUS
             "KEKE", "TRICYCLE" -> AbujaTransitMode.KEKE
             "BIKE", "OKADA", "MOTORBIKE" -> AbujaTransitMode.OKADA
+            "DROP", "BOLT", "UBER", "CHARTER" -> AbujaTransitMode.DROP
             else -> AbujaTransitMode.TAXI
         }
+        if (mapped == AbujaTransitMode.DROP) return AbujaTransitMode.DROP
         return if (mapped in entry.allowedModes) {
             mapped
         } else if (AbujaTransitMode.TAXI in entry.allowedModes) {
@@ -204,6 +207,13 @@ object AbujaFareTable {
         legDistanceKm: Double
     ): FareBand {
         if (mode == AbujaTransitMode.TREK) return FareBand(0, 0, 0)
+        if (mode == AbujaTransitMode.DROP) {
+            val baseMin = (1200.0 + legDistanceKm * 320.0)
+            val min = roundToNearest50(baseMin).coerceAtLeast(1500)
+            val max = roundToNearest50(min * 1.32).coerceAtLeast(min + 400)
+            val overcharge = roundToNearest50(max * 1.22).coerceAtLeast(max + 500)
+            return FareBand(min, max, overcharge)
+        }
         val entry = findCorridorEntry(origin, destination)
         val base = entry.modeFareEstimates[mode] ?: FareBand(200, 400, 500)
 

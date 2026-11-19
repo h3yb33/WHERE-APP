@@ -8,6 +8,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -51,8 +52,9 @@ class OsmTransitService {
     }
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(12, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .callTimeout(7, TimeUnit.SECONDS)
         .build()
 
     private val nominatimMutex = Mutex()
@@ -219,55 +221,57 @@ class OsmTransitService {
         radiusMeters: Int = 1800
     ): List<NominatimPlace> = withContext(Dispatchers.IO) {
         if (!isInsideAbuja(lat, lng)) return@withContext emptyList()
-        try {
-            val overpassQuery = """
-                [out:json][timeout:6];
-                (
-                  node["highway"="bus_stop"](around:$radiusMeters,$lat,$lng);
-                  node["amenity"="bus_station"](around:$radiusMeters,$lat,$lng);
-                  node["amenity"="taxi"](around:$radiusMeters,$lat,$lng);
-                  node["public_transport"="station"](around:$radiusMeters,$lat,$lng);
-                );
-                out body 8;
-            """.trimIndent()
+        withTimeoutOrNull(4500L) {
+            try {
+                val overpassQuery = """
+                    [out:json][timeout:4];
+                    (
+                      node["highway"="bus_stop"](around:$radiusMeters,$lat,$lng);
+                      node["amenity"="bus_station"](around:$radiusMeters,$lat,$lng);
+                      node["amenity"="taxi"](around:$radiusMeters,$lat,$lng);
+                      node["public_transport"="station"](around:$radiusMeters,$lat,$lng);
+                    );
+                    out body 8;
+                """.trimIndent()
 
-            val formBody = FormBody.Builder()
-                .add("data", overpassQuery)
-                .build()
-            val req = Request.Builder()
-                .url("https://overpass-api.de/api/interpreter")
-                .header("User-Agent", USER_AGENT)
-                .post(formBody)
-                .build()
+                val formBody = FormBody.Builder()
+                    .add("data", overpassQuery)
+                    .build()
+                val req = Request.Builder()
+                    .url("https://overpass-api.de/api/interpreter")
+                    .header("User-Agent", USER_AGENT)
+                    .post(formBody)
+                    .build()
 
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext emptyList()
-                val body = resp.body?.string() ?: return@withContext emptyList()
-                val elements = JSONObject(body).optJSONArray("elements") ?: return@withContext emptyList()
-                val results = mutableListOf<NominatimPlace>()
-                for (i in 0 until elements.length()) {
-                    val el = elements.optJSONObject(i) ?: continue
-                    val nLat = el.optDouble("lat", Double.NaN)
-                    val nLng = el.optDouble("lon", Double.NaN)
-                    if (nLat.isNaN() || nLng.isNaN() || !isInsideAbuja(nLat, nLng)) continue
-                    val tags = el.optJSONObject("tags")
-                    val name = tags?.optString("name")?.takeIf { it.isNotBlank() } ?: continue
-                    results.add(
-                        NominatimPlace(
-                            displayName = "$name (OpenStreetMap stop)",
-                            shortName = name,
-                            lat = nLat,
-                            lng = nLng,
-                            isWithinAbuja = true
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@withTimeoutOrNull emptyList()
+                    val body = resp.body?.string() ?: return@withTimeoutOrNull emptyList()
+                    val elements = JSONObject(body).optJSONArray("elements") ?: return@withTimeoutOrNull emptyList()
+                    val results = mutableListOf<NominatimPlace>()
+                    for (i in 0 until elements.length()) {
+                        val el = elements.optJSONObject(i) ?: continue
+                        val nLat = el.optDouble("lat", Double.NaN)
+                        val nLng = el.optDouble("lon", Double.NaN)
+                        if (nLat.isNaN() || nLng.isNaN() || !isInsideAbuja(nLat, nLng)) continue
+                        val tags = el.optJSONObject("tags")
+                        val name = tags?.optString("name")?.takeIf { it.isNotBlank() } ?: continue
+                        results.add(
+                            NominatimPlace(
+                                displayName = "$name (OpenStreetMap stop)",
+                                shortName = name,
+                                lat = nLat,
+                                lng = nLng,
+                                isWithinAbuja = true
+                            )
                         )
-                    )
+                    }
+                    results.distinctBy { it.shortName.lowercase() }
                 }
-                return@withContext results.distinctBy { it.shortName.lowercase() }
+            } catch (e: Exception) {
+                Log.w(TAG, "Overpass OpenStreetMap stop lookup skipped", e)
+                emptyList()
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Overpass OpenStreetMap stop lookup skipped", e)
-            emptyList()
-        }
+        } ?: emptyList()
     }
 
     /**
@@ -284,79 +288,78 @@ class OsmTransitService {
         val straightDistKm = haversineKm(startLat, startLng, endLat, endLng).coerceAtLeast(0.05)
         val fallbackMinutes = estimateMinutes(straightDistKm, mode)
         val fallbackPoints = listOf(LatLngPoint(startLat, startLng), LatLngPoint(endLat, endLng))
+        val fallback = OsrmRouteResult(fallbackPoints, straightDistKm, fallbackMinutes, emptyList(), false)
 
-        try {
-            val url = "https://router.project-osrm.org/route/v1/$profile/" +
-                "$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true"
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", USER_AGENT)
-                .get()
-                .build()
+        withTimeoutOrNull(5500L) {
+            try {
+                val url = "https://router.project-osrm.org/route/v1/$profile/" +
+                    "$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true"
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", USER_AGENT)
+                    .get()
+                    .build()
 
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext OsrmRouteResult(fallbackPoints, straightDistKm, fallbackMinutes, emptyList(), false)
-                }
-                val body = response.body?.string()
-                    ?: return@withContext OsrmRouteResult(fallbackPoints, straightDistKm, fallbackMinutes, emptyList(), false)
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@withTimeoutOrNull fallback
+                    val body = response.body?.string() ?: return@withTimeoutOrNull fallback
 
-                val root = JSONObject(body)
-                val routes = root.optJSONArray("routes")
-                val first = routes?.optJSONObject(0)
-                    ?: return@withContext OsrmRouteResult(fallbackPoints, straightDistKm, fallbackMinutes, emptyList(), false)
+                    val root = JSONObject(body)
+                    val routes = root.optJSONArray("routes")
+                    val first = routes?.optJSONObject(0) ?: return@withTimeoutOrNull fallback
 
-                val distKm = (first.optDouble("distance", straightDistKm * 1000.0) / 1000.0).coerceAtLeast(0.05)
-                val durationSecs = first.optDouble("duration", fallbackMinutes * 60.0)
-                val osrmMinutes = (durationSecs / 60.0).toInt().coerceAtLeast(2)
+                    val distKm = (first.optDouble("distance", straightDistKm * 1000.0) / 1000.0).coerceAtLeast(0.05)
+                    val durationSecs = first.optDouble("duration", fallbackMinutes * 60.0)
+                    val osrmMinutes = (durationSecs / 60.0).toInt().coerceAtLeast(2)
 
-                val adjustedMins = if (mode == AbujaTransitMode.TREK) {
-                    (distKm * 12.5).toInt().coerceAtLeast(2)
-                } else {
-                    maxOf(osrmMinutes, estimateMinutes(distKm, mode))
-                }
+                    val adjustedMins = if (mode == AbujaTransitMode.TREK) {
+                        (distKm * 12.5).toInt().coerceAtLeast(2)
+                    } else {
+                        maxOf(osrmMinutes, estimateMinutes(distKm, mode))
+                    }
 
-                // Extract real OpenStreetMap road names from OSRM steps
-                val roadNames = mutableListOf<String>()
-                val legsArr = first.optJSONArray("legs")
-                if (legsArr != null) {
-                    for (l in 0 until legsArr.length()) {
-                        val stepsArr = legsArr.optJSONObject(l)?.optJSONArray("steps") ?: continue
-                        for (s in 0 until stepsArr.length()) {
-                            val name = stepsArr.optJSONObject(s)?.optString("name")?.trim().orEmpty()
-                            if (name.isNotBlank() && name != "unnamed road") {
-                                roadNames.add(name)
+                    val roadNames = mutableListOf<String>()
+                    val legsArr = first.optJSONArray("legs")
+                    if (legsArr != null) {
+                        for (l in 0 until legsArr.length()) {
+                            val stepsArr = legsArr.optJSONObject(l)?.optJSONArray("steps") ?: continue
+                            for (s in 0 until stepsArr.length()) {
+                                val name = stepsArr.optJSONObject(s)?.optString("name")?.trim().orEmpty()
+                                if (name.isNotBlank() && name != "unnamed road") {
+                                    roadNames.add(name)
+                                }
                             }
                         }
                     }
-                }
 
-                val coords = first.optJSONObject("geometry")?.optJSONArray("coordinates")
-                val points = mutableListOf<LatLngPoint>()
-                if (coords != null) {
-                    for (i in 0 until coords.length()) {
-                        val pt = coords.optJSONArray(i) ?: continue
-                        val lng = pt.optDouble(0)
-                        val lat = pt.optDouble(1)
-                        points.add(LatLngPoint(lat = lat, lng = lng))
+                    val coords = first.optJSONObject("geometry")?.optJSONArray("coordinates")
+                    val points = mutableListOf<LatLngPoint>()
+                    if (coords != null) {
+                        for (i in 0 until coords.length()) {
+                            val pt = coords.optJSONArray(i) ?: continue
+                            val lng = pt.optDouble(0)
+                            val lat = pt.optDouble(1)
+                            points.add(LatLngPoint(lat = lat, lng = lng))
+                        }
+                    }
+
+                    if (points.size >= 2) {
+                        OsrmRouteResult(
+                            points = points,
+                            distanceKm = distKm,
+                            durationMinutes = adjustedMins,
+                            roadNames = roadNames.distinct().take(4),
+                            isFromOsrm = true
+                        )
+                    } else {
+                        fallback
                     }
                 }
-
-                if (points.size >= 2) {
-                    return@withContext OsrmRouteResult(
-                        points = points,
-                        distanceKm = distKm,
-                        durationMinutes = adjustedMins,
-                        roadNames = roadNames.distinct().take(4),
-                        isFromOsrm = true
-                    )
-                }
+            } catch (e: Exception) {
+                Log.w(TAG, "OSRM route request failed, falling back to straight dashed line", e)
+                fallback
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "OSRM route request failed, falling back to straight dashed line", e)
-        }
-
-        OsrmRouteResult(fallbackPoints, straightDistKm, fallbackMinutes, emptyList(), false)
+        } ?: fallback
     }
 
     private suspend fun executeNominatimGet(url: String): String? {
@@ -397,6 +400,7 @@ class OsmTransitService {
             AbujaTransitMode.OKADA -> 28.0
             AbujaTransitMode.BUS -> 24.0
             AbujaTransitMode.TAXI -> 30.0
+            AbujaTransitMode.DROP -> 34.0
         }
         return ((distKm / speedKmh) * 60.0).toInt().coerceAtLeast(2)
     }

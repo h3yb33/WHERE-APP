@@ -18,6 +18,7 @@ import com.example.model.ChatMessage
 import com.example.model.NominatimPlace
 import com.example.model.PickMapTarget
 import com.example.model.PostTripSurveyInput
+import com.example.model.RouteBundle
 import com.example.model.RoutePlan
 import com.google.firebase.ai.Chat
 import kotlinx.coroutines.CancellationException
@@ -38,7 +39,13 @@ import java.util.UUID
 sealed interface RoutePlanState {
     data object Idle : RoutePlanState
     data object Loading : RoutePlanState
-    data class Success(val plan: RoutePlan) : RoutePlanState
+    data class Success(
+        val bundle: RouteBundle,
+        val selectedIndex: Int = 0
+    ) : RoutePlanState {
+        val plan: RoutePlan
+            get() = bundle.options[selectedIndex.coerceIn(bundle.options.indices)]
+    }
     data class Error(val message: String) : RoutePlanState
 }
 
@@ -123,6 +130,7 @@ class WhereViewModel(
 
     private var originSearchJob: Job? = null
     private var destinationSearchJob: Job? = null
+    private var routeSearchJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -356,8 +364,9 @@ class WhereViewModel(
 
         dismissSuggestions()
         _searchNotice.value = null
+        routeSearchJob?.cancel()
 
-        viewModelScope.launch {
+        routeSearchJob = viewModelScope.launch {
             _routePlanState.value = RoutePlanState.Loading
             val memoryContext = memoryRepo.getMemoryContextPrompt(originText, destText)
             val result = geminiRepo.planMultimodalRoute(
@@ -368,8 +377,8 @@ class WhereViewModel(
                 memoryContext = memoryContext
             )
             result.fold(
-                onSuccess = { plan ->
-                    _routePlanState.value = RoutePlanState.Success(plan)
+                onSuccess = { bundle ->
+                    _routePlanState.value = RoutePlanState.Success(bundle = bundle, selectedIndex = 0)
                 },
                 onFailure = { err ->
                     val msg = if (err is OutsideAbujaException) {
@@ -380,6 +389,13 @@ class WhereViewModel(
                     _routePlanState.value = RoutePlanState.Error(msg)
                 }
             )
+        }
+    }
+
+    fun selectRouteOption(index: Int) {
+        val current = _routePlanState.value as? RoutePlanState.Success ?: return
+        if (index in current.bundle.options.indices) {
+            _routePlanState.value = current.copy(selectedIndex = index)
         }
     }
 

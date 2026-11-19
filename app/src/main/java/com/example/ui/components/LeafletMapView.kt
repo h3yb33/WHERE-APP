@@ -1,26 +1,15 @@
 package com.example.ui.components
 
-import android.annotation.SuppressLint
-import android.graphics.Color
-import android.graphics.Outline
+import android.graphics.BitmapFactory
 import android.util.Log
-import android.view.MotionEvent
-import android.view.View
-import android.view.ViewGroup
-import android.view.ViewOutlineProvider
-import android.webkit.ConsoleMessage
-import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.util.LruCache
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,15 +20,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -47,20 +41,34 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.OsmTransitService
 import com.example.model.LatLngPoint
 import com.example.model.PickMapTarget
@@ -72,33 +80,96 @@ import com.example.ui.theme.WhereMintSurface
 import com.example.ui.theme.WhereMutedText
 import com.example.ui.theme.WhereSubtleBorder
 import com.example.ui.theme.WhereWhite
-import org.json.JSONArray
-import org.json.JSONObject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.Collections
+import java.util.concurrent.TimeUnit
+import kotlin.math.PI
+import kotlin.math.atan
+import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.ln
+import kotlin.math.log2
+import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.math.sinh
+import kotlin.math.tan
 
-private const val MAP_TAG = "LeafletAbujaMapView"
+private const val MAP_TAG = "OsmNativeMapView"
+private const val OSM_USER_AGENT = "WHERE-Abuja-Commuter/1.0 (OpenStreetMap Abuja FCT App)"
+private const val MIN_ZOOM = 10.0
+private const val MAX_ZOOM = 17.5
 
-private class LeafletBridge(
-    private val onTap: (Double, Double) -> Unit,
-    private val onReady: () -> Unit,
-    private val onError: (String) -> Unit
-) {
-    @JavascriptInterface
-    fun onMapTapped(lat: Double, lng: Double) {
-        onTap(lat, lng)
+private object OsmTileCache {
+    private val cache = LruCache<String, ImageBitmap>(72)
+    private val inFlight: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+    private val failedKeys: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .callTimeout(7, TimeUnit.SECONDS)
+        .build()
+
+    fun get(key: String): ImageBitmap? = cache.get(key)
+
+    fun isInFlight(key: String): Boolean = inFlight.contains(key)
+
+    fun hasFailed(key: String): Boolean = failedKeys.contains(key)
+
+    fun clearFailures() {
+        failedKeys.clear()
     }
 
-    @JavascriptInterface
-    fun onMapReady() {
-        onReady()
+    suspend fun fetchTile(z: Int, x: Int, y: Int): Boolean {
+        val key = "$z/$x/$y"
+        if (cache.get(key) != null) return true
+        if (!inFlight.add(key)) return false
+
+        return try {
+            val bitmap = withContext(Dispatchers.IO) {
+                downloadTileBitmap("https://tile.openstreetmap.org/$z/$x/$y.png")
+                    ?: downloadTileBitmap("https://a.tile.openstreetmap.fr/osmfr/$z/$x/$y.png")
+            }
+            if (bitmap != null) {
+                failedKeys.remove(key)
+                cache.put(key, bitmap)
+                true
+            } else {
+                failedKeys.add(key)
+                false
+            }
+        } catch (e: Exception) {
+            Log.w(MAP_TAG, "Tile load error for $key: ${e.message}")
+            failedKeys.add(key)
+            false
+        } finally {
+            inFlight.remove(key)
+        }
     }
 
-    @JavascriptInterface
-    fun onMapError(message: String) {
-        onError(message)
+    private fun downloadTileBitmap(url: String): ImageBitmap? {
+        return try {
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", OSM_USER_AGENT)
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val bytes = resp.body?.bytes() ?: return null
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
 @Composable
 fun LeafletAbujaMapView(
     routePlan: RoutePlan?,
@@ -111,39 +182,221 @@ fun LeafletAbujaMapView(
     modifier: Modifier = Modifier
 ) {
     val latestOnTap by rememberUpdatedState(onMapTapped)
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
-    var isPageReady by remember { mutableStateOf(false) }
-    var isLeafletReady by remember { mutableStateOf(false) }
-    var mapErrorMessage by remember { mutableStateOf<String?>(null) }
-    var reloadNonce by remember { mutableIntStateOf(0) }
-
+    val latestPickTarget by rememberUpdatedState(pickMapTarget)
+    val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val cornerRadiusPx = with(density) { 20.dp.toPx() }
+    val baseTilePx = with(density) { 256.dp.toPx() }
 
-    val mapHtml = remember {
-        buildLeafletHtml()
+    var centerLat by remember { mutableDoubleStateOf(OsmTransitService.ABUJA_CENTER_LAT) }
+    var centerLng by remember { mutableDoubleStateOf(OsmTransitService.ABUJA_CENTER_LNG) }
+    var zoom by remember { mutableDoubleStateOf(12.2) }
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var tileRevision by remember { mutableIntStateOf(0) }
+    var loadedTileCount by remember { mutableIntStateOf(0) }
+    var failedTileCount by remember { mutableIntStateOf(0) }
+    var retryNonce by remember { mutableIntStateOf(0) }
+
+    fun clampLat(lat: Double): Double =
+        lat.coerceIn(OsmTransitService.FCT_MIN_LAT, OsmTransitService.FCT_MAX_LAT)
+
+    fun clampLng(lng: Double): Double =
+        lng.coerceIn(OsmTransitService.FCT_MIN_LNG, OsmTransitService.FCT_MAX_LNG)
+
+    // Auto-frame Abuja markers / routes whenever they change
+    LaunchedEffect(routePlan, originMarker, destinationMarker, userLocation, canvasSize) {
+        if (canvasSize.width <= 0 || canvasSize.height <= 0) return@LaunchedEffect
+
+        val boundsPts = mutableListOf<Pair<Double, Double>>()
+        routePlan?.let { plan ->
+            boundsPts.add(plan.originLat to plan.originLng)
+            boundsPts.add(plan.destinationLat to plan.destinationLng)
+            plan.legs.forEach { leg ->
+                leg.pathPoints.forEach { pt -> boundsPts.add(pt.lat to pt.lng) }
+            }
+        }
+        if (boundsPts.isEmpty()) {
+            originMarker?.let { boundsPts.add(it) }
+            destinationMarker?.let { boundsPts.add(it) }
+        }
+        if (boundsPts.size >= 2) {
+            val minLat = boundsPts.minOf { it.first }
+            val maxLat = boundsPts.maxOf { it.first }
+            val minLng = boundsPts.minOf { it.second }
+            val maxLng = boundsPts.maxOf { it.second }
+            centerLat = clampLat((minLat + maxLat) / 2.0)
+            centerLng = clampLng((minLng + maxLng) / 2.0)
+
+            var bestZoom = 11.0
+            var candidate = 15.5
+            while (candidate >= MIN_ZOOM) {
+                val n = 2.0.pow(candidate)
+                val dx = (lngToWorldX(maxLng, n) - lngToWorldX(minLng, n)) * baseTilePx
+                val dy = (latToWorldY(minLat, n) - latToWorldY(maxLat, n)) * baseTilePx
+                if (dx <= canvasSize.width * 0.72 && dy <= canvasSize.height * 0.72) {
+                    bestZoom = candidate
+                    break
+                }
+                candidate -= 0.25
+            }
+            zoom = bestZoom.coerceIn(MIN_ZOOM, MAX_ZOOM)
+        } else if (boundsPts.size == 1) {
+            centerLat = clampLat(boundsPts[0].first)
+            centerLng = clampLng(boundsPts[0].second)
+            zoom = 14.0
+        } else if (userLocation != null) {
+            centerLat = clampLat(userLocation.first)
+            centerLng = clampLng(userLocation.second)
+            zoom = 13.5
+        }
     }
 
-    fun pushMapUpdate() {
-        val webView = webViewRef ?: return
-        if (!isPageReady) return
-        val payload = JSONObject().apply {
-            val oPair = routePlan?.let { it.originLat to it.originLng } ?: originMarker
-            val dPair = routePlan?.let { it.destinationLat to it.destinationLng } ?: destinationMarker
+    val tileZ = zoom.toInt().coerceIn(MIN_ZOOM.toInt(), MAX_ZOOM.toInt())
+    val tileScale = 2.0.pow(zoom - tileZ).toFloat()
+    val renderedTileSizePx = baseTilePx * tileScale
+    val nTiles = 1 shl tileZ
 
-            if (userLocation != null) {
-                put("userLocation", JSONArray().put(userLocation.first).put(userLocation.second))
+    // Request visible OpenStreetMap tiles whenever viewport or retry state changes
+    LaunchedEffect(centerLat, centerLng, zoom, canvasSize, retryNonce) {
+        if (canvasSize.width <= 0 || canvasSize.height <= 0) return@LaunchedEffect
+        val cWorldX = lngToWorldX(centerLng, nTiles.toDouble())
+        val cWorldY = latToWorldY(centerLat, nTiles.toDouble())
+        val halfWInTiles = (canvasSize.width / 2f) / renderedTileSizePx
+        val halfHInTiles = (canvasSize.height / 2f) / renderedTileSizePx
+
+        val minTx = floor(cWorldX - halfWInTiles).toInt().coerceIn(0, nTiles - 1)
+        val maxTx = floor(cWorldX + halfWInTiles).toInt().coerceIn(0, nTiles - 1)
+        val minTy = floor(cWorldY - halfHInTiles).toInt().coerceIn(0, nTiles - 1)
+        val maxTy = floor(cWorldY + halfHInTiles).toInt().coerceIn(0, nTiles - 1)
+
+        for (tx in minTx..maxTx) {
+            for (ty in minTy..maxTy) {
+                val key = "$tileZ/$tx/$ty"
+                val cached = OsmTileCache.get(key)
+                if (cached != null) {
+                    if (loadedTileCount == 0) loadedTileCount += 1
+                    continue
+                }
+                if (!OsmTileCache.isInFlight(key) && !OsmTileCache.hasFailed(key)) {
+                    scope.launch {
+                        val ok = OsmTileCache.fetchTile(tileZ, tx, ty)
+                        if (ok) {
+                            loadedTileCount += 1
+                        } else {
+                            failedTileCount += 1
+                        }
+                        tileRevision += 1
+                    }
+                }
             }
-            if (oPair != null) {
-                put("origin", JSONArray().put(oPair.first).put(oPair.second))
-                put("originLabel", routePlan?.originName ?: "Start")
+        }
+    }
+
+    val showOfflineNotice = loadedTileCount == 0 && failedTileCount >= 4
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFFEAF8EF))
+            .border(1.dp, WhereSubtleBorder, RoundedCornerShape(20.dp))
+            .onSizeChanged { canvasSize = it }
+            .pointerInput(baseTilePx) {
+                detectTransformGestures { _, pan, zoomChange, _ ->
+                    val nextZoom = (zoom + log2(zoomChange.toDouble())).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                    val curTileZ = nextZoom.toInt().coerceIn(MIN_ZOOM.toInt(), MAX_ZOOM.toInt())
+                    val curTileN = (1 shl curTileZ).toDouble()
+                    val curTilePx = baseTilePx * 2.0.pow(nextZoom - curTileZ)
+
+                    val curWorldX = lngToWorldX(centerLng, curTileN) - pan.x / curTilePx
+                    val curWorldY = latToWorldY(centerLat, curTileN) - pan.y / curTilePx
+
+                    centerLng = clampLng(worldXToLng(curWorldX, curTileN))
+                    centerLat = clampLat(worldYToLat(curWorldY, curTileN))
+                    zoom = nextZoom
+                }
             }
-            if (dPair != null) {
-                put("destination", JSONArray().put(dPair.first).put(dPair.second))
-                put("destLabel", routePlan?.destinationName ?: "Destination")
+            .pointerInput(baseTilePx) {
+                detectTapGestures { offset ->
+                    if (latestPickTarget == PickMapTarget.NONE) return@detectTapGestures
+                    if (canvasSize.width <= 0 || canvasSize.height <= 0) return@detectTapGestures
+                    val curTileZ = zoom.toInt().coerceIn(MIN_ZOOM.toInt(), MAX_ZOOM.toInt())
+                    val curTileN = (1 shl curTileZ).toDouble()
+                    val curTilePx = baseTilePx * 2.0.pow(zoom - curTileZ)
+
+                    val cWorldX = lngToWorldX(centerLng, curTileN)
+                    val cWorldY = latToWorldY(centerLat, curTileN)
+                    val tapWorldX = cWorldX + (offset.x - canvasSize.width / 2f) / curTilePx
+                    val tapWorldY = cWorldY + (offset.y - canvasSize.height / 2f) / curTilePx
+
+                    val tappedLat = worldYToLat(tapWorldY, curTileN)
+                    val tappedLng = worldXToLng(tapWorldX, curTileN)
+                    latestOnTap(tappedLat, tappedLng)
+                }
             }
-            val legsArr = JSONArray()
-            routePlan?.legs?.forEach { leg ->
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("leaflet_osm_webview")
+        ) {
+            // Read tileRevision so Compose redraws as OpenStreetMap tiles arrive
+            val rev = tileRevision
+            if (rev < 0) return@Canvas
+
+            val cWorldX = lngToWorldX(centerLng, nTiles.toDouble())
+            val cWorldY = latToWorldY(centerLat, nTiles.toDouble())
+            val halfW = size.width / 2f
+            val halfH = size.height / 2f
+
+            fun latLngToScreen(lat: Double, lng: Double): Offset {
+                val wx = lngToWorldX(lng, nTiles.toDouble())
+                val wy = latToWorldY(lat, nTiles.toDouble())
+                return Offset(
+                    x = halfW + ((wx - cWorldX) * renderedTileSizePx).toFloat(),
+                    y = halfH + ((wy - cWorldY) * renderedTileSizePx).toFloat()
+                )
+            }
+
+            // Subtle placeholder grid under streaming OSM tiles
+            val gridStep = 64.dp.toPx()
+            val gridColor = Color(0xFFD6EDE0)
+            var gx = 0f
+            while (gx < size.width) {
+                drawLine(gridColor, Offset(gx, 0f), Offset(gx, size.height), strokeWidth = 1f)
+                gx += gridStep
+            }
+            var gy = 0f
+            while (gy < size.height) {
+                drawLine(gridColor, Offset(0f, gy), Offset(size.width, gy), strokeWidth = 1f)
+                gy += gridStep
+            }
+
+            val halfWInTiles = halfW / renderedTileSizePx
+            val halfHInTiles = halfH / renderedTileSizePx
+            val minTx = floor(cWorldX - halfWInTiles).toInt().coerceIn(0, nTiles - 1)
+            val maxTx = floor(cWorldX + halfWInTiles).toInt().coerceIn(0, nTiles - 1)
+            val minTy = floor(cWorldY - halfHInTiles).toInt().coerceIn(0, nTiles - 1)
+            val maxTy = floor(cWorldY + halfHInTiles).toInt().coerceIn(0, nTiles - 1)
+
+            val dstTileSize = ceil(renderedTileSizePx).toInt() + 1
+
+            for (tx in minTx..maxTx) {
+                for (ty in minTy..maxTy) {
+                    val bmp = OsmTileCache.get("$tileZ/$tx/$ty") ?: continue
+                    val left = (halfW + ((tx - cWorldX) * renderedTileSizePx).toFloat()).roundToInt()
+                    val top = (halfH + ((ty - cWorldY) * renderedTileSizePx).toFloat()).roundToInt()
+                    drawImage(
+                        image = bmp,
+                        dstOffset = IntOffset(left, top),
+                        dstSize = IntSize(dstTileSize, dstTileSize)
+                    )
+                }
+            }
+
+            // Draw dashed green OSRM route legs
+            val dashEffect = PathEffect.dashPathEffect(floatArrayOf(18f, 12f), 0f)
+            val legStrokeWidth = 4.5.dp.toPx()
+            routePlan?.legs?.forEachIndexed { index, leg ->
                 val pts = if (leg.pathPoints.size >= 2) {
                     leg.pathPoints
                 } else {
@@ -152,161 +405,108 @@ fun LeafletAbujaMapView(
                         LatLngPoint(leg.endLat, leg.endLng)
                     )
                 }
-                val ptsArr = JSONArray()
-                pts.forEach { pt -> ptsArr.put(JSONArray().put(pt.lat).put(pt.lng)) }
-                legsArr.put(JSONObject().put("points", ptsArr))
+                val path = Path()
+                pts.forEachIndexed { ptIdx, pt ->
+                    val off = latLngToScreen(pt.lat, pt.lng)
+                    if (ptIdx == 0) path.moveTo(off.x, off.y) else path.lineTo(off.x, off.y)
+                }
+                drawPath(
+                    path = path,
+                    color = Color(0xFF0B6B43).copy(alpha = 0.92f),
+                    style = Stroke(
+                        width = legStrokeWidth,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = dashEffect
+                    )
+                )
+
+                if (index > 0 && pts.isNotEmpty()) {
+                    val transferOff = latLngToScreen(pts.first().lat, pts.first().lng)
+                    drawCircle(
+                        color = Color.White,
+                        radius = 5.5.dp.toPx(),
+                        center = transferOff
+                    )
+                    drawCircle(
+                        color = Color(0xFF0B6B43),
+                        radius = 5.5.dp.toPx(),
+                        center = transferOff,
+                        style = Stroke(width = 2.dp.toPx())
+                    )
+                }
             }
-            put("legs", legsArr)
-        }
-        webView.post {
-            webView.evaluateJavascript(
-                "if (window.updateWhereMap) { window.updateWhereMap($payload); } else { window.__pendingWherePayload = $payload; }",
-                null
-            )
-        }
-    }
 
-    LaunchedEffect(routePlan, userLocation, originMarker, destinationMarker, isPageReady, isLeafletReady) {
-        pushMapUpdate()
-    }
+            // Draw blue GPS pulse dot
+            userLocation?.let { (uLat, uLng) ->
+                val uOff = latLngToScreen(uLat, uLng)
+                drawCircle(
+                    color = Color(0xFF1A73E8).copy(alpha = 0.22f),
+                    radius = 15.dp.toPx(),
+                    center = uOff
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = 8.dp.toPx(),
+                    center = uOff
+                )
+                drawCircle(
+                    color = Color(0xFF1A73E8),
+                    radius = 5.5.dp.toPx(),
+                    center = uOff
+                )
+            }
 
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(WhereMintSurface, RoundedCornerShape(20.dp))
-            .border(1.dp, WhereSubtleBorder, RoundedCornerShape(20.dp))
-    ) {
-        AndroidView(
-            factory = { context ->
-                WebView(context).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    setBackgroundColor(Color.parseColor("#EAF8EF"))
-                    outlineProvider = object : ViewOutlineProvider() {
-                        override fun getOutline(view: View, outline: Outline) {
-                            outline.setRoundRect(0, 0, view.width, view.height, cornerRadiusPx)
-                        }
-                    }
-                    clipToOutline = true
+            // Draw green start dot
+            val oPair = routePlan?.let { it.originLat to it.originLng } ?: originMarker
+            oPair?.let { (oLat, oLng) ->
+                val oOff = latLngToScreen(oLat, oLng)
+                drawCircle(
+                    color = Color.White,
+                    radius = 9.dp.toPx(),
+                    center = oOff
+                )
+                drawCircle(
+                    color = Color(0xFF0B6B43),
+                    radius = 6.5.dp.toPx(),
+                    center = oOff
+                )
+            }
 
-                    CookieManager.getInstance().setAcceptCookie(true)
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-
-                    settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        loadsImagesAutomatically = true
-                        blockNetworkImage = false
-                        useWideViewPort = true
-                        loadWithOverviewMode = true
-                        cacheMode = WebSettings.LOAD_DEFAULT
-                        mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                        // Standard mobile Chrome UA + app token avoids OSM default WebView (; wv) blocking
-                        userAgentString =
-                            "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36 WHERE-Abuja/1.0"
-                    }
-
-                    addJavascriptInterface(
-                        LeafletBridge(
-                            onTap = { lat, lng -> post { latestOnTap(lat, lng) } },
-                            onReady = {
-                                post {
-                                    isLeafletReady = true
-                                    mapErrorMessage = null
-                                    pushMapUpdate()
-                                }
-                            },
-                            onError = { msg ->
-                                post {
-                                    Log.w(MAP_TAG, "Leaflet JS error: $msg")
-                                    mapErrorMessage = msg
-                                }
-                            }
-                        ),
-                        "WhereBridge"
-                    )
-
-                    setOnTouchListener { view, event ->
-                        when (event.actionMasked) {
-                            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                                view.parent?.requestDisallowInterceptTouchEvent(true)
-                            }
-                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                                view.parent?.requestDisallowInterceptTouchEvent(false)
-                            }
-                        }
-                        false
-                    }
-
-                    webChromeClient = object : WebChromeClient() {
-                        override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                            if (consoleMessage != null) {
-                                Log.d(MAP_TAG, "JS [${consoleMessage.messageLevel()}]: ${consoleMessage.message()}")
-                            }
-                            return super.onConsoleMessage(consoleMessage)
-                        }
-                    }
-
-                    webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            super.onPageFinished(view, url)
-                            isPageReady = true
-                            view?.postDelayed({
-                                view.evaluateJavascript(
-                                    "if (window.__whereMap) { window.__whereMap.invalidateSize(true); }",
-                                    null
-                                )
-                            }, 200L)
-                            pushMapUpdate()
-                        }
-
-                        override fun onReceivedError(
-                            view: WebView?,
-                            request: WebResourceRequest?,
-                            error: WebResourceError?
-                        ) {
-                            super.onReceivedError(view, request, error)
-                            if (request?.isForMainFrame == true) {
-                                mapErrorMessage = error?.description?.toString()
-                                    ?: "Unable to load OpenStreetMap tiles."
-                            }
-                        }
-                    }
-
-                    loadDataWithBaseURL(
-                        "https://where-abuja.app/",
-                        mapHtml,
-                        "text/html",
-                        "UTF-8",
-                        null
-                    )
-                    webViewRef = this
+            // Draw destination pin
+            val dPair = routePlan?.let { it.destinationLat to it.destinationLng } ?: destinationMarker
+            dPair?.let { (dLat, dLng) ->
+                val dOff = latLngToScreen(dLat, dLng)
+                val pinHeight = 26.dp.toPx()
+                val headRadius = 9.dp.toPx()
+                val headCenter = Offset(dOff.x, dOff.y - pinHeight + headRadius)
+                val pinPath = Path().apply {
+                    moveTo(dOff.x, dOff.y)
+                    lineTo(dOff.x - headRadius * 0.8f, headCenter.y + headRadius * 0.35f)
+                    lineTo(dOff.x + headRadius * 0.8f, headCenter.y + headRadius * 0.35f)
+                    close()
                 }
-            },
-            update = { webView ->
-                webView.invalidate()
-                if (reloadNonce > 0 && mapErrorMessage == null && !isLeafletReady) {
-                    webView.loadDataWithBaseURL(
-                        "https://where-abuja.app/",
-                        mapHtml,
-                        "text/html",
-                        "UTF-8",
-                        null
-                    )
-                }
-            },
-            onRelease = { webView ->
-                webView.stopLoading()
-                webView.destroy()
-            },
-            modifier = Modifier
-                .fillMaxSize()
-                .testTag("leaflet_osm_webview")
-        )
+                drawPath(pinPath, color = Color(0xFF0B6B43))
+                drawCircle(
+                    color = Color(0xFF0B6B43),
+                    radius = headRadius,
+                    center = headCenter
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = headRadius,
+                    center = headCenter,
+                    style = Stroke(width = 2.5.dp.toPx())
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = 3.2.dp.toPx(),
+                    center = headCenter
+                )
+            }
+        }
 
-        if (!isLeafletReady && mapErrorMessage == null) {
+        if (loadedTileCount == 0 && !showOfflineNotice) {
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -331,7 +531,7 @@ fun LeafletAbujaMapView(
             }
         }
 
-        if (mapErrorMessage != null) {
+        if (showOfflineNotice) {
             Surface(
                 color = WhereWhite.copy(alpha = 0.96f),
                 shape = RoundedCornerShape(16.dp),
@@ -359,7 +559,7 @@ fun LeafletAbujaMapView(
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = mapErrorMessage.orEmpty(),
+                        text = "Check your connection and tap Retry Map.",
                         style = MaterialTheme.typography.bodySmall,
                         color = WhereMutedText,
                         textAlign = TextAlign.Center
@@ -367,16 +567,9 @@ fun LeafletAbujaMapView(
                     Spacer(modifier = Modifier.height(2.dp))
                     OutlinedButton(
                         onClick = {
-                            mapErrorMessage = null
-                            isLeafletReady = false
-                            reloadNonce += 1
-                            webViewRef?.loadDataWithBaseURL(
-                                "https://where-abuja.app/",
-                                mapHtml,
-                                "text/html",
-                                "UTF-8",
-                                null
-                            )
+                            OsmTileCache.clearFailures()
+                            failedTileCount = 0
+                            retryNonce += 1
                         },
                         shape = RoundedCornerShape(999.dp),
                         border = BorderStroke(1.dp, WhereDeepGreen),
@@ -420,6 +613,75 @@ fun LeafletAbujaMapView(
                     color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.SemiBold
                 )
+            }
+        }
+
+        // Top-right Zoom & Center Controls
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Surface(
+                color = WhereWhite.copy(alpha = 0.94f),
+                shape = CircleShape,
+                border = BorderStroke(1.dp, WhereSubtleBorder),
+                shadowElevation = 2.dp
+            ) {
+                IconButton(
+                    onClick = { zoom = (zoom + 0.8).coerceIn(MIN_ZOOM, MAX_ZOOM) },
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Zoom in",
+                        tint = WhereMainText,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            Surface(
+                color = WhereWhite.copy(alpha = 0.94f),
+                shape = CircleShape,
+                border = BorderStroke(1.dp, WhereSubtleBorder),
+                shadowElevation = 2.dp
+            ) {
+                IconButton(
+                    onClick = { zoom = (zoom - 0.8).coerceIn(MIN_ZOOM, MAX_ZOOM) },
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Remove,
+                        contentDescription = "Zoom out",
+                        tint = WhereMainText,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            if (userLocation != null) {
+                Surface(
+                    color = WhereWhite.copy(alpha = 0.94f),
+                    shape = CircleShape,
+                    border = BorderStroke(1.dp, WhereSubtleBorder),
+                    shadowElevation = 2.dp
+                ) {
+                    IconButton(
+                        onClick = {
+                            centerLat = clampLat(userLocation.first)
+                            centerLng = clampLng(userLocation.second)
+                            zoom = 14.0
+                        },
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MyLocation,
+                            contentDescription = "Center on my location",
+                            tint = WhereDeepGreen,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             }
         }
 
@@ -485,218 +747,19 @@ fun LeafletAbujaMapView(
     }
 }
 
-private fun buildLeafletHtml(): String = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-          onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';" />
-    <style>
-        html, body {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background: #EAF8EF;
-        }
-        #map {
-            position: fixed;
-            top: 0;
-            right: 0;
-            bottom: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: #EAF8EF;
-        }
-        .leaflet-control-attribution {
-            font-size: 9px !important;
-            background: rgba(255,255,255,0.86) !important;
-        }
-        .where-dest-pin {
-            width: 22px;
-            height: 22px;
-            background: #0B6B43;
-            border: 3px solid #FFFFFF;
-            border-radius: 50% 50% 50% 0;
-            transform: rotate(-45deg);
-            box-shadow: 0 2px 6px rgba(0,0,0,0.35);
-        }
-        .where-gps-dot {
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #1A73E8;
-            border: 3px solid #FFFFFF;
-            box-shadow: 0 0 0 6px rgba(26, 115, 232, 0.25);
-        }
-    </style>
-</head>
-<body>
-    <div id="map"></div>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script>
-        (function() {
-            function bootLeaflet() {
-                if (typeof L === 'undefined') {
-                    if (window.WhereBridge && window.WhereBridge.onMapError) {
-                        window.WhereBridge.onMapError('Could not load Leaflet map engine.');
-                    }
-                    return;
-                }
+private fun lngToWorldX(lng: Double, nTiles: Double): Double {
+    return (lng + 180.0) / 360.0 * nTiles
+}
 
-                var fctBounds = L.latLngBounds(
-                    [${OsmTransitService.FCT_MIN_LAT}, ${OsmTransitService.FCT_MIN_LNG}],
-                    [${OsmTransitService.FCT_MAX_LAT}, ${OsmTransitService.FCT_MAX_LNG}]
-                );
+private fun latToWorldY(lat: Double, nTiles: Double): Double {
+    val latRad = Math.toRadians(lat.coerceIn(-85.0511, 85.0511))
+    return (1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * nTiles
+}
 
-                var map = L.map('map', {
-                    center: [${OsmTransitService.ABUJA_CENTER_LAT}, ${OsmTransitService.ABUJA_CENTER_LNG}],
-                    zoom: 12,
-                    minZoom: 10,
-                    maxZoom: 18,
-                    maxBounds: fctBounds,
-                    maxBoundsViscosity: 0.85,
-                    zoomControl: true
-                });
-                window.__whereMap = map;
+private fun worldXToLng(worldX: Double, nTiles: Double): Double {
+    return worldX / nTiles * 360.0 - 180.0
+}
 
-                var primaryTiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    maxZoom: 19,
-                    attribution: '&copy; OpenStreetMap contributors'
-                }).addTo(map);
-
-                var tileErrorCount = 0;
-                var tileLoadCount = 0;
-                var backupAdded = false;
-                primaryTiles.on('tileload', function() {
-                    tileLoadCount += 1;
-                });
-                primaryTiles.on('tileerror', function() {
-                    tileErrorCount += 1;
-                    if (!backupAdded && tileLoadCount === 0 && tileErrorCount >= 3) {
-                        backupAdded = true;
-                        L.tileLayer('https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
-                            maxZoom: 19,
-                            attribution: '&copy; OpenStreetMap contributors'
-                        }).addTo(map);
-                    }
-                });
-
-                var routeLayer = L.layerGroup().addTo(map);
-                var gpsLayer = L.layerGroup().addTo(map);
-
-                map.on('click', function(e) {
-                    if (window.WhereBridge && window.WhereBridge.onMapTapped) {
-                        window.WhereBridge.onMapTapped(e.latlng.lat, e.latlng.lng);
-                    }
-                });
-
-                window.updateWhereMap = function(payload) {
-                    routeLayer.clearLayers();
-                    gpsLayer.clearLayers();
-                    var boundsPoints = [];
-
-                    if (payload.userLocation) {
-                        var gpsIcon = L.divIcon({
-                            className: '',
-                            html: '<div class="where-gps-dot"></div>',
-                            iconSize: [22, 22],
-                            iconAnchor: [11, 11]
-                        });
-                        L.marker(payload.userLocation, { icon: gpsIcon })
-                            .bindPopup('Your Abuja Location')
-                            .addTo(gpsLayer);
-                        boundsPoints.push(payload.userLocation);
-                    }
-
-                    if (payload.legs && payload.legs.length > 0) {
-                        payload.legs.forEach(function(leg, index) {
-                            if (leg.points && leg.points.length >= 2) {
-                                L.polyline(leg.points, {
-                                    color: '#0B6B43',
-                                    weight: 5,
-                                    opacity: 0.92,
-                                    dashArray: '8, 8'
-                                }).addTo(routeLayer);
-                                leg.points.forEach(function(pt) { boundsPoints.push(pt); });
-                            }
-                            if (index > 0 && leg.points && leg.points.length > 0) {
-                                L.circleMarker(leg.points[0], {
-                                    radius: 5,
-                                    color: '#0B6B43',
-                                    weight: 2,
-                                    fillColor: '#FFFFFF',
-                                    fillOpacity: 1
-                                }).addTo(routeLayer);
-                            }
-                        });
-                    }
-
-                    if (payload.origin) {
-                        L.circleMarker(payload.origin, {
-                            radius: 8,
-                            color: '#FFFFFF',
-                            weight: 3,
-                            fillColor: '#0B6B43',
-                            fillOpacity: 1
-                        }).bindPopup(payload.originLabel || 'Start').addTo(routeLayer);
-                        boundsPoints.push(payload.origin);
-                    }
-
-                    if (payload.destination) {
-                        var destIcon = L.divIcon({
-                            className: '',
-                            html: '<div class="where-dest-pin"></div>',
-                            iconSize: [24, 24],
-                            iconAnchor: [12, 24]
-                        });
-                        L.marker(payload.destination, { icon: destIcon })
-                            .bindPopup(payload.destLabel || 'Destination')
-                            .addTo(routeLayer);
-                        boundsPoints.push(payload.destination);
-                    }
-
-                    map.invalidateSize(true);
-                    if (boundsPoints.length >= 2) {
-                        map.fitBounds(boundsPoints, { padding: [44, 44], maxZoom: 15 });
-                    } else if (boundsPoints.length === 1) {
-                        map.setView(boundsPoints[0], 14);
-                    }
-                };
-
-                setTimeout(function() { map.invalidateSize(true); }, 100);
-                setTimeout(function() { map.invalidateSize(true); }, 400);
-                setTimeout(function() { map.invalidateSize(true); }, 1000);
-                window.addEventListener('resize', function() { map.invalidateSize(true); });
-
-                if (window.__pendingWherePayload) {
-                    window.updateWhereMap(window.__pendingWherePayload);
-                    window.__pendingWherePayload = null;
-                }
-                if (window.WhereBridge && window.WhereBridge.onMapReady) {
-                    window.WhereBridge.onMapReady();
-                }
-            }
-
-            if (typeof L !== 'undefined') {
-                bootLeaflet();
-            } else {
-                var fallback = document.createElement('script');
-                fallback.src = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
-                fallback.onload = bootLeaflet;
-                fallback.onerror = function() {
-                    if (window.WhereBridge && window.WhereBridge.onMapError) {
-                        window.WhereBridge.onMapError('Could not load OpenStreetMap Leaflet scripts.');
-                    }
-                };
-                document.head.appendChild(fallback);
-            }
-        })();
-    </script>
-</body>
-</html>
-""".trimIndent()
+private fun worldYToLat(worldY: Double, nTiles: Double): Double {
+    return Math.toDegrees(atan(sinh(PI * (1.0 - 2.0 * worldY / nTiles))))
+}

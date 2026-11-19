@@ -1,13 +1,18 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -17,18 +22,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.ElectricRickshaw
 import androidx.compose.material.icons.filled.Flag
-import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.LocalTaxi
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.StarOutline
 import androidx.compose.material.icons.filled.TwoWheeler
 import androidx.compose.material.icons.filled.WarningAmber
@@ -47,6 +51,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,6 +63,14 @@ import com.example.model.RoutePlan
 import com.example.model.TransitLeg
 import com.example.ui.theme.OverchargeAmber
 import com.example.ui.theme.OverchargeSoftBg
+import com.example.ui.theme.RushHourBannerBg
+import com.example.ui.theme.RushHourBannerBorder
+import com.example.ui.theme.RushHourBannerText
+import com.example.ui.theme.TimelineArriveGreen
+import com.example.ui.theme.TimelineBlue
+import com.example.ui.theme.TimelinePurple
+import com.example.ui.theme.TimelineSlate
+import com.example.ui.theme.TimelineTeal
 import com.example.ui.theme.WhereDeepGreen
 import com.example.ui.theme.WhereInfoBg
 import com.example.ui.theme.WhereInfoTitle
@@ -145,12 +160,12 @@ fun ActiveTripTrackerCard(
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Step ${leg.stepNumber} · ${leg.mode}",
+                                    text = leg.headline.ifBlank { "Step ${leg.stepNumber} · ${leg.mode}" },
                                     style = MaterialTheme.typography.labelLarge,
                                     color = WhereDeepGreen
                                 )
                                 Text(
-                                    text = leg.instruction,
+                                    text = leg.subHeadline.ifBlank { leg.instruction },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = WhereMainText
                                 )
@@ -193,15 +208,12 @@ fun RouteResultCard(
     Card(
         colors = CardDefaults.cardColors(containerColor = WhereWhite),
         shape = RoundedCornerShape(22.dp),
-        border = BorderStroke(
-            width = if (plan.trekRecommended) 2.dp else 1.dp,
-            color = if (plan.trekRecommended) WhereDeepGreen else WhereSubtleBorder
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        border = BorderStroke(1.dp, WhereSubtleBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
+            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             if (plan.trekRecommended) {
@@ -250,89 +262,66 @@ fun RouteResultCard(
                 }
             }
 
+            // "Step by step" Header + Total duration & price summary + Close icon
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Step by step",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = WhereMainText
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "${plan.originName} -> ${plan.destinationName}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = WhereMainText
-                    )
-                    Text(
-                        text = "${String.format("%.1f", plan.distanceKm)} km · ~${plan.totalMinutes} mins · ${plan.legs.size} leg(s)",
+                        text = "${formatDurationLabel(plan.totalMinutes)} · ${formatPlanFareRange(plan)}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = WhereMutedText
+                        color = WhereMutedText,
+                        fontWeight = FontWeight.Medium
                     )
-                }
-                IconButton(
-                    onClick = onClearResult,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Close route results",
-                        tint = WhereMutedText,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    IconButton(
+                        onClick = onClearResult,
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close route results",
+                            tint = WhereMutedText,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
                 }
             }
 
-            Surface(
-                color = WhereInfoBg,
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, WhereMintBorder),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+            // Warm Amber Rush Hour / Fare Agreement Notice Box
+            if (plan.rushHourNotice.isNotBlank()) {
+                Surface(
+                    color = RushHourBannerBg,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, RushHourBannerBorder),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.Top
                     ) {
-                        Text(
-                            text = "TOTAL FAIR FARE (ESTIMATE)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = WhereInfoTitle,
-                            fontWeight = FontWeight.Bold
+                        Icon(
+                            imageVector = Icons.Default.WarningAmber,
+                            contentDescription = null,
+                            tint = OverchargeAmber,
+                            modifier = Modifier.size(18.dp)
                         )
                         Text(
-                            text = if (plan.trekRecommended) "₦0" else "₦${plan.totalFareMinNaira}–₦${plan.totalFareMaxNaira}",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = WhereDeepGreen,
-                            fontWeight = FontWeight.Bold
+                            text = plan.rushHourNotice,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = RushHourBannerText,
+                            fontWeight = FontWeight.Medium
                         )
                     }
-                    if (!plan.trekRecommended && plan.totalOverchargeAboveNaira > 0) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.WarningAmber,
-                                contentDescription = null,
-                                tint = OverchargeAmber,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Text(
-                                text = "You are being overcharged above ₦${plan.totalOverchargeAboveNaira}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = OverchargeAmber,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-                    Text(
-                        text = plan.fareEstimateDisclaimer,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = WhereMutedText
-                    )
                 }
             }
 
@@ -363,44 +352,21 @@ fun RouteResultCard(
                 }
             }
 
+            // Connected Step-by-Step Vertical Timeline
+            Column(modifier = Modifier.fillMaxWidth()) {
+                plan.legs.forEach { leg ->
+                    TimelineStepRow(leg = leg)
+                }
+                TimelineArrivalRow(destinationName = plan.destinationName)
+            }
+
             HorizontalDivider(color = WhereSubtleBorder)
 
             Text(
-                text = "Step-by-step legs",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = WhereMainText
+                text = plan.fareEstimateDisclaimer,
+                style = MaterialTheme.typography.labelSmall,
+                color = WhereMutedText
             )
-
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                plan.legs.forEachIndexed { index, leg ->
-                    TransitLegRow(stepNumber = index + 1, leg = leg)
-                }
-            }
-
-            Surface(
-                color = OverchargeSoftBg.copy(alpha = 0.7f),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.Top
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Shield,
-                        contentDescription = null,
-                        tint = OverchargeAmber,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = plan.antiInflationTip,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = WhereMainText
-                    )
-                }
-            }
 
             SearchGroundingBar(
                 webSources = plan.webSources,
@@ -471,143 +437,230 @@ fun RouteResultCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TransitLegRow(
-    stepNumber: Int,
-    leg: TransitLeg
-) {
-    val icon = when (leg.mode.uppercase()) {
-        "WALK", "TREK" -> Icons.AutoMirrored.Filled.DirectionsWalk
-        "KEKE" -> Icons.Default.ElectricRickshaw
-        "BIKE", "OKADA" -> Icons.Default.TwoWheeler
-        "BUS", "BRT" -> Icons.Default.DirectionsBus
-        else -> Icons.Default.LocalTaxi
+private fun TimelineStepRow(leg: TransitLeg) {
+    val isWalk = leg.mode.equals("TREK", ignoreCase = true) || leg.mode.equals("WALK", ignoreCase = true)
+    val (nodeColor, icon) = when (leg.mode.uppercase()) {
+        "BUS", "BRT" -> TimelineBlue to Icons.Default.DirectionsBus
+        "TAXI" -> TimelineBlue to Icons.Default.LocalTaxi
+        "KEKE" -> TimelinePurple to Icons.Default.ElectricRickshaw
+        "OKADA", "BIKE" -> OverchargeAmber to Icons.Default.TwoWheeler
+        "DROP" -> TimelineTeal to Icons.Default.LocalTaxi
+        else -> TimelineSlate to Icons.AutoMirrored.Filled.DirectionsWalk
     }
 
-    val fareLabel = if (leg.fareMinNaira == 0 && leg.fareMaxNaira == 0) {
-        "₦0 (Trek it)"
-    } else {
-        "Est. ₦${leg.fareMinNaira}–₦${leg.fareMaxNaira}"
-    }
-
-    Surface(
-        color = WhereWhite,
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, WhereSubtleBorder),
-        modifier = Modifier.fillMaxWidth()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
     ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        // Left Timeline Column: Node Circle + Vertical Line
+        Column(
+            modifier = Modifier
+                .width(36.dp)
+                .fillMaxHeight(),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Box(
                 modifier = Modifier
-                    .size(38.dp)
+                    .size(32.dp)
                     .clip(CircleShape)
-                    .background(WhereMintSurface),
+                    .background(nodeColor),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = icon,
                     contentDescription = leg.mode,
-                    tint = WhereDeepGreen,
-                    modifier = Modifier.size(20.dp)
+                    tint = WhereWhite,
+                    modifier = Modifier.size(18.dp)
                 )
             }
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "STEP $stepNumber · ${leg.mode}",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = WhereDeepGreen,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Surface(
-                        color = WhereMintSurface,
-                        shape = RoundedCornerShape(999.dp),
-                        border = BorderStroke(1.dp, WhereMintBorder)
-                    ) {
-                        Text(
-                            text = fareLabel,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = WhereDeepGreen,
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
-                        )
-                    }
-                }
-
-                if (leg.boardingPoint.isNotBlank() || leg.alightingPoint.isNotBlank()) {
-                    val board = leg.boardingPoint.ifBlank { "Start" }
-                    val alight = leg.alightingPoint.ifBlank { "End" }
-                    Text(
-                        text = "$board  ->  $alight",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = WhereMainText
-                    )
-                }
-
-                Text(
-                    text = leg.instruction,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = WhereMainText
-                )
-
-                if (leg.overchargeAboveNaira > 0) {
-                    Surface(
-                        color = OverchargeSoftBg,
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text(
-                            text = "Overcharged above ₦${leg.overchargeAboveNaira}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = OverchargeAmber,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
-                    }
-                }
-
-                if (leg.areaRuleNote.isNotBlank()) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Gavel,
-                            contentDescription = null,
-                            tint = WhereMutedText,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Text(
-                            text = leg.areaRuleNote,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = WhereMutedText
-                        )
-                    }
-                }
-
-                if (leg.roadNamesSummary.isNotBlank()) {
-                    Text(
-                        text = "Via OpenStreetMap: ${leg.roadNamesSummary}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = WhereDeepGreen,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-
-                Text(
-                    text = "${leg.distanceText} · ~${leg.durationMinutes} min",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = WhereMutedText
+            Canvas(
+                modifier = Modifier
+                    .width(3.dp)
+                    .weight(1f)
+                    .padding(vertical = 2.dp)
+            ) {
+                drawLine(
+                    color = nodeColor.copy(alpha = if (isWalk) 0.55f else 0.85f),
+                    start = Offset(size.width / 2f, 0f),
+                    end = Offset(size.width / 2f, size.height),
+                    strokeWidth = 2.5.dp.toPx(),
+                    pathEffect = if (isWalk) PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f) else null
                 )
             }
         }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        // Right Step Content
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Text(
+                text = leg.headline.ifBlank { "Step ${leg.stepNumber} · ${leg.mode}" },
+                style = MaterialTheme.typography.titleSmall,
+                color = WhereMainText,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = leg.subHeadline.ifBlank { leg.instruction },
+                style = MaterialTheme.typography.bodySmall,
+                color = WhereMutedText
+            )
+
+            if (!isWalk) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val stopPart = if (leg.stopCount > 0) "${leg.stopCount} stops  ·  " else ""
+                    Text(
+                        text = "$stopPart${leg.distanceText}  ·",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WhereMutedText
+                    )
+                    Icon(
+                        imageVector = Icons.Default.AccessTime,
+                        contentDescription = null,
+                        tint = WhereMutedText,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    val waitPart = if (leg.waitMinutes > 0) ", about ${leg.waitMinutes} min wait" else ""
+                    Text(
+                        text = "${leg.durationMinutes} min ride$waitPart",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WhereMutedText
+                    )
+                }
+
+                // Mint FAIR FARE / FIXED FARE Card
+                Surface(
+                    color = WhereInfoBg,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, WhereMintBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = leg.fareLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WhereMutedText,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            val fareText = if (leg.isFixedFare || leg.fareMinNaira == leg.fareMaxNaira) {
+                                formatNaira(leg.fareMinNaira)
+                            } else {
+                                "${formatNaira(leg.fareMinNaira)}–${formatNaira(leg.fareMaxNaira)}"
+                            }
+                            Text(
+                                text = fareText,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = WhereMainText,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(end = 10.dp)
+                            )
+
+                            if (!leg.isFixedFare && leg.overchargeAboveNaira > 0) {
+                                Surface(
+                                    color = OverchargeSoftBg,
+                                    shape = RoundedCornerShape(999.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.WarningAmber,
+                                            contentDescription = null,
+                                            tint = OverchargeAmber,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Text(
+                                            text = "Above ${formatNaira(leg.overchargeAboveNaira)} is too much",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = RushHourBannerText,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if (leg.fareHelperNote.isNotBlank()) {
+                            Text(
+                                text = leg.fareHelperNote,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = WhereDeepGreen
+                            )
+                        }
+                        if (leg.roadNamesSummary.isNotBlank()) {
+                            Text(
+                                text = "Via OpenStreetMap: ${leg.roadNamesSummary}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = WhereMutedText
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (leg.changeAtNote.isNotBlank()) {
+                Text(
+                    text = leg.changeAtNote,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = WhereDeepGreen,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineArrivalRow(destinationName: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(CircleShape)
+                .background(TimelineArriveGreen),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Flag,
+                contentDescription = "Arrive",
+                tint = WhereWhite,
+                modifier = Modifier.size(17.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(
+            text = "Arrive at $destinationName",
+            style = MaterialTheme.typography.titleSmall,
+            color = WhereMainText,
+            fontWeight = FontWeight.Bold
+        )
     }
 }

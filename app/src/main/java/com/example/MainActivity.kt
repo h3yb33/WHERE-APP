@@ -314,6 +314,7 @@ private fun WhereMainShell(
                             onSelectSavedPlace = { place -> viewModel.selectSavedPlace(place) },
                             onRunSampleTrip = viewModel::runSampleTrip,
                             onFindRoute = { viewModel.findRoute() },
+                            onSelectRouteOption = viewModel::selectRouteOption,
                             onClearResult = viewModel::clearRouteResult,
                             onSavePlace = viewModel::savePlaceFromPlan,
                             onSaveRoute = viewModel::saveCurrentRoute,
